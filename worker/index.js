@@ -1,53 +1,361 @@
-const API='https://discord.com/api/v10';
-const INTENTS=1|512|32768;
+const DISCORD_API = 'https://discord.com/api/v10';
+const GATEWAY_VERSION = 10;
+const INTENTS = 1 | 512 | 32768; // GUILDS | GUILD_MESSAGES | MESSAGE_CONTENT
 
 export default {
-  async fetch(request,env){
-    const url=new URL(request.url), cors=corsHeaders(request,env);
-    if(request.method==='OPTIONS') return new Response(null,{status:204,headers:cors});
-    if(url.pathname==='/api/config') return json({clientId:env.DISCORD_CLIENT_ID||'',inviteUrl:env.DISCORD_CLIENT_ID?`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(env.DISCORD_CLIENT_ID)}&scope=bot%20applications.commands`:''},200,cors);
-    if(url.pathname==='/api/health') return withCors(await bridge(env).fetch(new Request('https://do/internal/health')),cors);
-    if(url.pathname==='/api/guilds'){
-      const r=await discord(env,'/users/@me/guilds?limit=200'); if(!r.ok)return discordError(r,cors);
-      return json((await r.json()).map(g=>({id:g.id,name:g.name,icon:g.icon?`https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=128`:null})),200,cors);
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const cors = corsHeaders(request, env);
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+
+    if (url.pathname === '/api/config') {
+      const clientId = env.DISCORD_CLIENT_ID || '';
+      return json({
+        clientId,
+        inviteUrl: clientId
+          ? `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&scope=bot%20applications.commands&permissions=3072`
+          : ''
+      }, 200, cors);
     }
-    const gc=url.pathname.match(/^\/api\/guilds\/([^/]+)\/channels$/);
-    if(gc){const r=await discord(env,`/guilds/${gc[1]}/channels`);if(!r.ok)return discordError(r,cors);return json((await r.json()).filter(c=>c.type===0).sort((a,b)=>(a.position||0)-(b.position||0)).map(c=>({id:c.id,name:c.name,position:c.position,categoryId:c.parent_id})),200,cors);}
-    const cm=url.pathname.match(/^\/api\/channels\/([^/]+)\/messages$/);
-    if(cm&&request.method==='GET'){const r=await discord(env,`/channels/${cm[1]}/messages?limit=100`);if(!r.ok)return discordError(r,cors);return json((await r.json()).reverse().map(pack),200,cors);}
-    if(cm&&request.method==='POST'){
-      if(env.WRITE_API_KEY&&request.headers.get('x-omnibot-key')!==env.WRITE_API_KEY)return json({error:'Unauthorized'},401,cors);
-      const body=await request.json().catch(()=>({})),content=String(body.content||'').trim();
-      if(!content||content.length>2000)return json({error:'Message must be 1-2000 characters.'},400,cors);
-      const r=await discord(env,`/channels/${cm[1]}/messages`,{method:'POST',body:JSON.stringify({content,allowed_mentions:{parse:[]}})});if(!r.ok)return discordError(r,cors);return json(pack(await r.json()),201,cors);
+
+    const bridge = getBridge(env);
+
+    if (url.pathname === '/api/health') {
+      return withCors(await bridge.fetch(internal('/health')), cors);
     }
-    if(url.pathname==='/ws')return bridge(env).fetch(request);
-    return new Response('OmniBot Worker online',{headers:{...cors,'content-type':'text/plain'}});
+
+    if (url.pathname === '/api/guilds') {
+      const response = await bridge.fetch(internal('/guilds'));
+      return withCors(response, cors);
+    }
+
+    const channels = url.pathname.match(/^\/api\/guilds\/([^/]+)\/channels$/);
+    if (channels && request.method === 'GET') {
+      const guildId = channels[1];
+      const known = await bridge.fetch(internal(`/guild/${guildId}/known`));
+      if (known.status !== 200) return withCors(known, cors);
+      const response = await discord(env, `/guilds/${guildId}/channels`);
+      if (!response.ok) return discordError(response, cors);
+      const data = await response.json();
+      return json(data.filter(c => c.type === 0).sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map(c => ({
+        id: c.id, name: c.name, position: c.position, categoryId: c.parent_id
+      })), 200, cors);
+    }
+
+    const messages = url.pathname.match(/^\/api\/channels\/([^/]+)\/messages$/);
+    if (messages && request.method === 'GET') {
+      const response = await discord(env, `/channels/${messages[1]}/messages?limit=100`);
+      if (!response.ok) return discordError(response, cors);
+      return json((await response.json()).reverse().map(pack), 200, cors);
+    }
+
+    if (messages && request.method === 'POST') {
+      if (env.WRITE_API_KEY && request.headers.get('x-omnibot-key') !== env.WRITE_API_KEY) {
+        return json({ error: 'Unauthorized' }, 401, cors);
+      }
+      const body = await request.json().catch(() => ({}));
+      const content = String(body.content || '').trim();
+      if (!content || content.length > 2000) return json({ error: 'Message must be 1-2000 characters.' }, 400, cors);
+      const response = await discord(env, `/channels/${messages[1]}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ content, allowed_mentions: { parse: [] } })
+      });
+      if (!response.ok) return discordError(response, cors);
+      return json(pack(await response.json()), 201, cors);
+    }
+
+    if (url.pathname === '/ws') return bridge.fetch(request);
+    return new Response('OmniBot Worker online', { headers: { ...cors, 'content-type': 'text/plain' } });
   }
 };
 
-const bridge=env=>env.BOT_BRIDGE.get(env.BOT_BRIDGE.idFromName('global'));
-const discord=(env,path,opt={})=>fetch(API+path,{...opt,headers:{authorization:`Bot ${env.DISCORD_TOKEN}`,'content-type':'application/json',...(opt.headers||{})}});
-const user=u=>({id:u?.id,username:u?.username,globalName:u?.global_name||u?.username,avatar:u?.avatar?`https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.png?size=128`:null,bot:!!u?.bot});
-const pack=m=>({id:m.id,channelId:m.channel_id,guildId:m.guild_id||null,content:m.content||'',createdAt:Date.parse(m.timestamp),editedAt:m.edited_timestamp?Date.parse(m.edited_timestamp):null,author:user(m.author),attachments:(m.attachments||[]).map(a=>({id:a.id,name:a.filename,url:a.url,contentType:a.content_type||null,size:a.size,width:a.width,height:a.height}))});
-const json=(v,s=200,h={})=>new Response(JSON.stringify(v),{status:s,headers:{'content-type':'application/json; charset=utf-8',...h}});
-async function discordError(r,h){const t=await r.text();let e=t;try{e=JSON.parse(t).message||t}catch{}return json({error:e||`Discord ${r.status}`},r.status,h)}
-function corsHeaders(req,env){const origin=req.headers.get('Origin')||'';const allowed=env.ALLOWED_ORIGIN||'*';return{'access-control-allow-origin':allowed==='*'?'*':origin===allowed?origin:allowed,'access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'Content-Type,x-omnibot-key','cache-control':'no-store'}}
-function withCors(r,h){const headers=new Headers(r.headers);for(const[k,v]of Object.entries(h))headers.set(k,v);return new Response(r.body,{status:r.status,headers})}
-
-export class BotBridge{
-  constructor(ctx,env){this.ctx=ctx;this.env=env;this.gateway=null;this.clients=new Map();this.seq=null;this.heartbeat=null;this.reconnect=null;this.starting=false;}
-  async fetch(req){const u=new URL(req.url);if(u.pathname==='/internal/health')return json({ok:true,gatewayConnected:!!this.gateway,browserClients:this.clients.size});if(req.headers.get('Upgrade')?.toLowerCase()!=='websocket')return new Response('WebSocket required',{status:426});const pair=new WebSocketPair(),client=pair[0],server=pair[1];server.accept();const id=crypto.randomUUID();this.clients.set(id,{socket:server,channelId:''});server.addEventListener('message',e=>this.browser(id,e.data));server.addEventListener('close',()=>this.clients.delete(id));server.addEventListener('error',()=>this.clients.delete(id));safe(server,{type:'status',gatewayConnected:!!this.gateway});this.start();return new Response(null,{status:101,webSocket:client});}
-  browser(id,raw){try{const m=JSON.parse(raw),c=this.clients.get(id);if(c&&m.type==='subscribe'){c.channelId=String(m.channelId||'');safe(c.socket,{type:'subscribed',channelId:c.channelId});}}catch{}}
-  async start(){if(this.gateway||this.starting||!this.env.DISCORD_TOKEN)return;this.starting=true;try{const r=await discord(this.env,'/gateway/bot');if(!r.ok)throw Error('Gateway discovery failed');const {url}=await r.json();const ws=await fetch(`${url}?v=10&encoding=json`,{headers:{Upgrade:'websocket'}});if(!ws.webSocket)throw Error('Gateway rejected WebSocket');this.gateway=ws.webSocket;this.gateway.accept();this.gateway.addEventListener('message',e=>this.gatewayMessage(e.data));this.gateway.addEventListener('close',()=>this.dead());this.gateway.addEventListener('error',()=>{});}catch(e){console.error('[OmniBot]',e.message);this.schedule();}finally{this.starting=false;}}
-  gatewayMessage(raw){let p;try{p=JSON.parse(raw)}catch{return}if(p.s!==null&&p.s!==undefined)this.seq=p.s;if(p.op===10){this.beat(p.d.heartbeat_interval);this.send(2,{token:this.env.DISCORD_TOKEN,intents:INTENTS,properties:{os:'linux',browser:'omnibot',device:'omnibot'}});return}if(p.op===0)return this.dispatch(p.t,p.d);if(p.op===1)return this.send(1,this.seq);if(p.op===7||p.op===9)return this.reset();}
-  beat(ms){if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=setInterval(()=>this.send(1,this.seq),Math.max(Number(ms)||41250,5000));}
-  send(op,d){try{this.gateway?.send(JSON.stringify({op,d}))}catch{}}
-  dead(){this.gateway=null;if(this.heartbeat)clearInterval(this.heartbeat);this.heartbeat=null;this.broadcast({type:'status',gatewayConnected:false});this.schedule();}
-  reset(){try{this.gateway?.close()}catch{}this.dead();}
-  schedule(){if(this.reconnect)return;this.reconnect=setTimeout(()=>{this.reconnect=null;this.start()},5000);}
-  dispatch(type,d){if(type==='READY'){this.broadcast({type:'status',gatewayConnected:true});return}if(type==='MESSAGE_CREATE')this.message('message:create',d);else if(type==='MESSAGE_UPDATE')this.message('message:update',d);else if(type==='MESSAGE_DELETE')this.message('message:delete',d);}
-  message(type,d){const data=type==='message:delete'?{id:d.id,channelId:d.channel_id}:pack(d);for(const c of this.clients.values())if(c.channelId===d.channel_id)safe(c.socket,{type,data});}
-  broadcast(v){for(const c of this.clients.values())safe(c.socket,v)}
+function getBridge(env) {
+  return env.BOT_BRIDGE.get(env.BOT_BRIDGE.idFromName('global'));
 }
-const safe=(s,v)=>{try{s.send(JSON.stringify(v))}catch{}};
+
+function internal(path) {
+  return new Request(`https://omnibot.internal${path}`);
+}
+
+async function discord(env, path, options = {}) {
+  return fetch(DISCORD_API + path, {
+    ...options,
+    headers: {
+      authorization: `Bot ${env.DISCORD_TOKEN}`,
+      'content-type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+}
+
+const user = u => ({
+  id: u?.id,
+  username: u?.username,
+  globalName: u?.global_name || u?.username,
+  avatar: u?.avatar ? `https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.png?size=128` : null,
+  bot: !!u?.bot
+});
+
+const pack = m => ({
+  id: m.id,
+  channelId: m.channel_id,
+  guildId: m.guild_id || null,
+  content: m.content || '',
+  createdAt: Date.parse(m.timestamp),
+  editedAt: m.edited_timestamp ? Date.parse(m.edited_timestamp) : null,
+  author: user(m.author),
+  attachments: (m.attachments || []).map(a => ({
+    id: a.id, name: a.filename, url: a.url, contentType: a.content_type || null,
+    size: a.size, width: a.width, height: a.height
+  }))
+});
+
+const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), {
+  status,
+  headers: { 'content-type': 'application/json; charset=utf-8', ...headers }
+});
+
+async function discordError(response, headers) {
+  const text = await response.text();
+  let message = text;
+  try { message = JSON.parse(text).message || text; } catch {}
+  return json({ error: message || `Discord ${response.status}` }, response.status, headers);
+}
+
+function corsHeaders(request, env) {
+  const origin = request.headers.get('Origin') || '';
+  const allowed = env.ALLOWED_ORIGIN || '*';
+  const allowOrigin = allowed === '*' ? '*' : (origin === allowed ? origin : allowed);
+  return {
+    'access-control-allow-origin': allowOrigin,
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'Content-Type,x-omnibot-key',
+    'access-control-allow-credentials': allowed === '*' ? 'false' : 'true',
+    'cache-control': 'no-store',
+    vary: 'Origin'
+  };
+}
+
+function withCors(response, headers) {
+  const next = new Headers(response.headers);
+  for (const [key, value] of Object.entries(headers)) next.set(key, value);
+  return new Response(response.body, { status: response.status, headers: next });
+}
+
+export class BotBridge {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.gateway = null;
+    this.clients = new Map();
+    this.guilds = new Map();
+    this.seq = null;
+    this.heartbeat = null;
+    this.reconnectTimer = null;
+    this.starting = false;
+    this.sessionId = null;
+    this.resumeUrl = null;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/health') {
+      return json({
+        ok: true,
+        gatewayConnected: !!this.gateway,
+        browserClients: this.clients.size,
+        guilds: this.guilds.size
+      });
+    }
+
+    if (url.pathname === '/guilds') {
+      return json([...this.guilds.values()]);
+    }
+
+    const known = url.pathname.match(/^\/guild\/([^/]+)\/known$/);
+    if (known) {
+      return this.guilds.has(known[1])
+        ? json({ ok: true })
+        : json({ error: 'The bot is not connected to this server.' }, 404);
+    }
+
+    if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+      // An HTTP request is enough to wake the bridge when the frontend first loads.
+      this.ensureGateway();
+      return new Response('WebSocket required', { status: 426 });
+    }
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const socket = pair[1];
+    socket.accept();
+
+    const id = crypto.randomUUID();
+    this.clients.set(id, { socket, channelId: null, guildId: null });
+    socket.addEventListener('message', event => this.browserMessage(id, event.data));
+    socket.addEventListener('close', () => this.clients.delete(id));
+    socket.addEventListener('error', () => this.clients.delete(id));
+
+    safe(socket, { type: 'status', gatewayConnected: !!this.gateway, guildCount: this.guilds.size });
+    this.ensureGateway();
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async browserMessage(id, raw) {
+    try {
+      const message = JSON.parse(raw);
+      const client = this.clients.get(id);
+      if (!client) return;
+      if (message.type === 'subscribe') {
+        client.guildId = String(message.guildId || '');
+        client.channelId = String(message.channelId || '');
+        safe(client.socket, { type: 'subscribed', guildId: client.guildId, channelId: client.channelId });
+      }
+    } catch {}
+  }
+
+  ensureGateway() {
+    if (this.gateway || this.starting || !this.env.DISCORD_TOKEN) return;
+    this.starting = true;
+    this.ctx.waitUntil(this.connectGateway());
+  }
+
+  async connectGateway() {
+    try {
+      const discovery = await fetch(`${DISCORD_API}/gateway/bot`, {
+        headers: { authorization: `Bot ${this.env.DISCORD_TOKEN}` }
+      });
+      if (!discovery.ok) throw new Error(`Gateway discovery failed (${discovery.status})`);
+      const info = await discovery.json();
+      this.resumeUrl = info.url;
+
+      const ws = await fetch(`${info.url}?v=${GATEWAY_VERSION}&encoding=json`, {
+        headers: { Upgrade: 'websocket' }
+      });
+      if (!ws.webSocket) throw new Error('Cloudflare did not create the outbound Gateway WebSocket');
+
+      this.gateway = ws.webSocket;
+      this.gateway.accept();
+      this.gateway.addEventListener('message', event => this.gatewayMessage(event.data));
+      this.gateway.addEventListener('close', () => this.gatewayClosed());
+      this.gateway.addEventListener('error', () => this.gatewayClosed());
+    } catch (error) {
+      console.error('[OmniBot Gateway]', error);
+      this.gateway = null;
+      this.scheduleReconnect(5000);
+    } finally {
+      this.starting = false;
+    }
+  }
+
+  gatewayMessage(raw) {
+    let payload;
+    try { payload = JSON.parse(raw); } catch { return; }
+    if (payload.s !== null && payload.s !== undefined) this.seq = payload.s;
+
+    if (payload.op === 10) {
+      this.startHeartbeat(payload.d.heartbeat_interval);
+      if (this.sessionId && this.resumeUrl) {
+        this.send(6, { token: this.env.DISCORD_TOKEN, session_id: this.sessionId, seq: this.seq });
+      } else {
+        this.send(2, {
+          token: this.env.DISCORD_TOKEN,
+          intents: INTENTS,
+          properties: { os: 'linux', browser: 'omnibot', device: 'omnibot' }
+        });
+      }
+      return;
+    }
+
+    if (payload.op === 11) return;
+    if (payload.op === 1) return this.send(1, this.seq);
+    if (payload.op === 7) return this.reconnectGateway();
+    if (payload.op === 9) {
+      this.sessionId = null;
+      this.seq = null;
+      return this.reconnectGateway();
+    }
+    if (payload.op === 0) this.dispatch(payload.t, payload.d);
+  }
+
+  dispatch(type, data) {
+    if (type === 'READY') {
+      this.sessionId = data.session_id;
+      this.resumeUrl = data.resume_gateway_url || this.resumeUrl;
+      this.guilds.clear();
+      for (const guild of data.guilds || []) {
+        this.guilds.set(guild.id, { id: guild.id, name: guild.name, icon: guild.icon ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128` : null });
+      }
+      this.broadcast({ type: 'status', gatewayConnected: true, guildCount: this.guilds.size });
+      this.broadcast({ type: 'guilds', data: [...this.guilds.values()] });
+      return;
+    }
+
+    if (type === 'GUILD_CREATE') {
+      this.guilds.set(data.id, { id: data.id, name: data.name, icon: data.icon ? `https://cdn.discordapp.com/icons/${data.id}/${data.icon}.png?size=128` : null });
+      this.broadcast({ type: 'guilds', data: [...this.guilds.values()] });
+      return;
+    }
+
+    if (type === 'GUILD_DELETE') {
+      this.guilds.delete(data.id);
+      this.broadcast({ type: 'guilds', data: [...this.guilds.values()] });
+      return;
+    }
+
+    if (type === 'MESSAGE_CREATE') return this.message('message:create', data);
+    if (type === 'MESSAGE_UPDATE') return this.message('message:update', data);
+    if (type === 'MESSAGE_DELETE') return this.message('message:delete', data);
+  }
+
+  message(type, data) {
+    const payload = type === 'message:delete'
+      ? { id: data.id, channelId: data.channel_id }
+      : pack(data);
+    for (const client of this.clients.values()) {
+      if (client.channelId === data.channel_id) safe(client.socket, { type, data: payload });
+    }
+  }
+
+  startHeartbeat(interval) {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = setInterval(() => {
+      if (this.gateway) this.send(1, this.seq);
+    }, Math.max(Number(interval) || 41250, 5000));
+  }
+
+  send(op, data) {
+    try { this.gateway?.send(JSON.stringify({ op, d: data })); } catch { this.gatewayClosed(); }
+  }
+
+  reconnectGateway() {
+    try { this.gateway?.close(1000, 'reconnect'); } catch {}
+    this.gatewayClosed();
+  }
+
+  gatewayClosed() {
+    this.gateway = null;
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+    this.broadcast({ type: 'status', gatewayConnected: false });
+    this.scheduleReconnect(5000);
+  }
+
+  scheduleReconnect(delay) {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.ensureGateway();
+    }, delay);
+  }
+
+  broadcast(payload) {
+    for (const client of this.clients.values()) safe(client.socket, payload);
+  }
+}
+
+const safe = (socket, payload) => {
+  try { socket.send(JSON.stringify(payload)); } catch {}
+};
