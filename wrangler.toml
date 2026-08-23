@@ -12,3 +12,6 @@ new_sqlite_classes = ["BotBridge"]
 
 [vars]
 ALLOWED_ORIGIN = "*"
+
+[secrets]
+required = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID"]
