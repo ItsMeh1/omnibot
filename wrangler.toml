@@ -1,0 +1,14 @@
+name = "omnibot"
+main = "worker/index.js"
+compatibility_date = "2026-08-23"
+
+[[durable_objects.bindings]]
+name = "BOT_BRIDGE"
+class_name = "BotBridge"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BotBridge"]
+
+[vars]
+ALLOWED_ORIGIN = "*"
