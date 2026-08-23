@@ -1,0 +1,5 @@
+# Copy these into .dev.vars for local Wrangler development.
+DISCORD_TOKEN=your_bot_token
+DISCORD_CLIENT_ID=your_application_id
+# Optional: only required if browser users should be allowed to send messages.
+WRITE_API_KEY=
