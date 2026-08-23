@@ -1,20 +1,57 @@
 # OmniBot
 
-A public Discord-style web client powered by a Discord bot, Cloudflare Workers + Durable Objects, and GitHub Pages.
+**Discord, anywhere.** OmniBot is a Discord bot + realtime web client that mirrors channels into an embeddable website.
 
 ## Architecture
 
-- **GitHub Pages** serves the public landing page, full client, and iframe embed.
-- **Cloudflare Worker** proxies Discord REST API calls.
-- **Durable Object** maintains one stateful Discord Gateway connection and broadcasts live message events to browser WebSockets.
+```text
+Discord Gateway
+      │
+      ▼
+Cloudflare Durable Object
+      │ WebSocket
+      ▼
+Cloudflare Worker
+      │
+      ├── REST API
+      └── WebSocket
+             │
+             ▼
+      GitHub Pages client
+             │
+             ▼
+          iframe
+```
 
-## Deploy
+GitHub Pages is only the frontend. Your computer is **not** the host and does not need to stay online.
 
-### 1. Discord
+## Discord setup
 
-Create a Discord application and bot. Enable **Message Content Intent** so ordinary message text can be mirrored. Invite the bot with the `bot` and `applications.commands` scopes and only the permissions it needs.
+1. Create an application in the Discord Developer Portal.
+2. Add a bot.
+3. Enable **Message Content Intent** under Bot → Privileged Gateway Intents.
+4. Invite the bot to a test server with the `bot` scope (and `applications.commands` if you want slash commands later).
+5. Give it at least **View Channels** and **Read Message History** for channels you want mirrored. Add **Send Messages** only if you later enable web-to-Discord posting.
+6. Copy the bot token and Application ID. Never put the bot token in GitHub or browser JavaScript.
 
-### 2. Cloudflare
+## Cloudflare deployment
+
+You can deploy from your GitHub repository; you do not need a VPS or a computer running 24/7.
+
+### Required Worker secrets
+
+Create these in **Cloudflare Dashboard → Workers & Pages → OmniBot → Settings → Variables and Secrets**:
+
+- `DISCORD_TOKEN` — your bot token, as a Secret.
+- `DISCORD_CLIENT_ID` — your Discord Application ID, as a Secret or normal variable.
+
+Optional:
+
+- `WRITE_API_KEY` — server-side key that enables the protected POST endpoint. Do not put this key in a public website. For a real public multi-user write experience, use Discord OAuth instead.
+
+### Deploy with Wrangler
+
+If you use the CLI:
 
 ```bash
 npm install
@@ -24,35 +61,65 @@ npx wrangler secret put DISCORD_CLIENT_ID
 npm run deploy
 ```
 
-`WRITE_API_KEY` is optional and protects browser-to-Discord posting if enabled:
+`wrangler.toml` already declares the `BOT_BRIDGE` Durable Object and its SQLite migration.
 
-```bash
-npx wrangler secret put WRITE_API_KEY
-```
+If Cloudflare reports a Durable Object migration/binding error, **stop there** and fix the configuration instead of creating a second Worker or changing random settings.
 
-### 3. GitHub Pages
+## GitHub Pages
 
-After deployment, edit `config.js`:
+The Pages frontend is at the repository root:
+
+- `index.html` — landing page
+- `app.html` — full web client
+- `embed.html` — iframe client
+- `app.js` — client logic
+- `styles.css` — UI
+- `config.js` — public Worker URL only
+
+After the Worker is deployed, edit `config.js`:
 
 ```js
 window.OMNIBOT_API = 'https://YOUR-WORKER.workers.dev';
 ```
 
-Enable GitHub Pages from the `main` branch and repository root.
+Then enable GitHub Pages from the `main` branch and `/ (root)`.
 
 ## Embed
 
+Once the Worker and Pages site are configured:
+
 ```html
 <iframe
-  src="https://itsmeh1.github.io/omnibot/public/embed.html?guild=GUILD_ID&channel=CHANNEL_ID"
+  src="https://itsmeh1.github.io/omnibot/embed.html?guild=GUILD_ID&channel=CHANNEL_ID"
   width="100%"
   height="600"
-  frameborder="0">
+  style="border:0;border-radius:16px;overflow:hidden"
+  loading="lazy"
+  title="OmniBot">
 </iframe>
 ```
 
-## Security
+Because the embed is a normal static page using a public Worker endpoint, the containing website does not need Node.js or its own backend.
 
-Never expose `DISCORD_TOKEN` in GitHub Pages or browser JavaScript. The bot can only mirror servers and channels where it is installed and has permission to view messages.
+## What works
 
-The current write API is intentionally optional. For a truly public multi-user posting feature, the next step should be Discord OAuth or another authentication system instead of exposing a shared API key.
+- Discord Gateway connection
+- Guild discovery from the bot's Gateway `READY` state
+- Text channel discovery through the bot token
+- Recent message history
+- Live message create/update/delete events
+- Message attachments
+- Responsive Discord-style client
+- Read-only iframe embeds
+- Automatic Gateway reconnect attempts
+- Public landing/invite page
+
+## Current limitation
+
+Web-to-Discord posting is deliberately **not public by default**. A shared API key is not safe to expose inside a public iframe because visitors could extract it.
+
+The correct next step for public posting is **Discord OAuth2 + per-user authorization**. That can let OmniBot determine who the visitor is and what servers/channels they are allowed to interact with.
+
+## Important reality check
+
+This project is more complicated than a normal static GitHub Pages site. The frontend is static, but the bot needs a persistent/reliable Discord Gateway connection and stateful realtime WebSockets. Cloudflare is providing that server-side runtime; GitHub Pages cannot run the Discord bot itself.
