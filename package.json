@@ -1,23 +1,13 @@
 {
   "name": "omnibot",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "A lightweight Discord-to-web live chat bridge with an embeddable Discord-style client.",
-  "type": "module",
-  "main": "src/server.js",
+  "description": "A GitHub Pages Discord-style client backed by a Cloudflare Worker and Durable Object.",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "wrangler dev worker/index.js",
+    "deploy": "wrangler deploy worker/index.js"
   },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.6.1",
-    "express": "^5.1.0",
-    "express-rate-limit": "^8.1.0",
-    "socket.io": "^4.8.1",
-    "discord.js": "^14.19.3"
+  "devDependencies": {
+    "wrangler": "^4.31.0"
   }
 }
