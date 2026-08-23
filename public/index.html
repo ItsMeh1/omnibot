@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#5865f2">
+  <title>OmniBot</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main id="app" class="loading">
+    <aside class="guild-bar"><div class="orb logo">O</div><div id="guilds" class="guilds"></div></aside>
+    <aside class="channel-bar">
+      <header id="guild-name">Connecting…</header>
+      <div id="channels" class="channels"></div>
+      <footer><span class="status-dot"></span><span id="connection-status">Connecting</span></footer>
+    </aside>
+    <section class="chat">
+      <header class="chat-header"><span class="hash">#</span><strong id="channel-name">Select a channel</strong><span id="member-count" class="header-muted"></span></header>
+      <div id="messages" class="messages"><div class="empty">Loading OmniBot…</div></div>
+      <form id="composer" class="composer">
+        <input id="message-input" maxlength="2000" autocomplete="off" placeholder="Select a channel to start" disabled>
+        <button id="send-button" type="submit" disabled>Send</button>
+      </form>
+    </section>
+  </main>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
